@@ -53,26 +53,36 @@ vec3 point_at_parameter(Ray r, float t){
 }
 
 ////////////////////////////////////////////////////
+// Material
+#define MATTE 0
+#define METAL 1
+#define DIELEC 2
+
+struct material{
+    int type;
+    vec4 albedo;
+    vec2 ref_idx;
+    material():type(0), albedo(vec4(0.0)), ref_idx(vec2(0.0)){}
+    material(int type, vec4 albedo):type(type), albedo(albedo), ref_idx(vec2(0.0)){}
+    material(int type, vec2 ref_idx):type(type), albedo(vec4(0.0)), ref_idx(ref_idx){}
+};
+
+////////////////////////////////////////////////////
 // Hittable
 struct hit_record{
     float t; // parameter
     vec3 p; // hit point
     vec3 normal; // surface normal at hit point
-    int material;
-    vec4 albedo;
-    float ref_idx;
-    hit_record():t(0.0), p(vec3(0.0)), normal(vec3(0.0)), material(0), albedo(vec4(0.0)), ref_idx(0.0f){}
+    material m; // material of sphere
+    hit_record():t(0.0), p(vec3(0.0)), normal(vec3(0.0)), m(){}
 };
 
 struct sphere{
     vec3 center;
     float radius;
-    int material;
-    vec4 albedo;
-    float ref_idx;
-    sphere():center(vec3(0.0)), radius(0.0), material(0), albedo(vec4(0.0)), ref_idx(0.0f){}
-    sphere(vec3 center, float radius, int material, vec4 albedo):center(center), radius(radius), material(material), albedo(albedo), ref_idx(0.0){}
-    sphere(vec3 center, float radius, int material, float ref_idx):center(center), radius(radius), material(material), albedo(vec4(0.0)), ref_idx(ref_idx){}
+    material m;
+    sphere():center(vec3(0.0)), radius(0.0), m(){}
+    sphere(vec3 center, float radius, material m):center(center), radius(radius), m(m){}
 };
 
 bool check_hit_rec(sphere s, Ray r, float temp, float t_min, float t_max, hit_record &rec){
@@ -80,9 +90,7 @@ bool check_hit_rec(sphere s, Ray r, float temp, float t_min, float t_max, hit_re
         rec.t = temp;
         rec.p = point_at_parameter(r, rec.t);
         rec.normal = (rec.p - s.center) / s.radius;
-        rec.material = s.material;
-        rec.albedo = s.albedo;
-        rec.ref_idx = s.ref_idx;
+        rec.m = s.m;
         return true;
     }
     return false;
@@ -179,10 +187,7 @@ void flushStack(){
 }
 
 ///////////////////////////////////////////////////////////////////
-// material
-#define MATTE 0
-#define METAL 1
-#define DIELEC 2
+// scatter
 vec3 random_in_unit_sphere() {
     vec3 p = normalize(vec3(gl_FragCoord.x, gl_FragCoord.y, gl_FragCoord.z));
     return p;
@@ -191,7 +196,7 @@ vec3 random_in_unit_sphere() {
 bool scatter_matte(Ray r_in, hit_record rec, vec4 &attenuation, Ray &scattered){
     vec3 target = rec.p + rec.normal + random_in_unit_sphere(); // p + N is the new point(center of imaginary sphere) in direction of random point in unit sphere
     scattered = Ray(rec.p, target - rec.p);
-    attenuation = rec.albedo;
+    attenuation = rec.m.albedo;
     return true;
 }
 
@@ -199,11 +204,11 @@ bool scatter_metal(Ray r_in, hit_record rec, vec4 &attenuation, Ray &scattered){
     vec3 norm_rin_dir = normalize(r_in.direction);
     vec3 reflected = reflect(norm_rin_dir, rec.normal);
     scattered = Ray(rec.p, reflected);
-    attenuation = rec.albedo;
+    attenuation = rec.m.albedo;
     return (dot(scattered.direction, rec.normal) > 0);
 }
 
-float getFresnel(vec3 incidence, vec3 outward_normal, vec3 transmitted, float ni, float nt){
+float fresnelDielec(vec3 incidence, vec3 outward_normal, vec3 transmitted, float ni, float nt){
     float cos_i = dot(incidence, outward_normal)/(length(incidence) * length(outward_normal));
     float cos_t = dot(transmitted, outward_normal)/(length(transmitted) * length(outward_normal));
     float nt_cos_i = nt * cos_i;
@@ -224,15 +229,15 @@ bool scatter_dielec(Ray r_in, hit_record rec, vec4 &fresnel, Ray &r_ref, Ray &r_
     float nt;
     if(dot(r_in.direction, rec.normal) > 0){
         outward_normal = -rec.normal;
-        ni = rec.ref_idx;
+        ni = rec.m.ref_idx.x;
         nt = 1.0f;
     } else {
         outward_normal = rec.normal;
         ni = 1.0f;
-        nt = rec.ref_idx;
+        nt = rec.m.ref_idx.x;
     }
     if(refract(r_in.direction, outward_normal, ni/nt, refracted)){
-        float f = getFresnel(r_in.direction, outward_normal, refracted, ni, nt);
+        float f = fresnelDielec(r_in.direction, outward_normal, refracted, ni, nt);
         fresnel = vec4(vec3(f), 1.0);
         r_ref = Ray(rec.p, reflected);
         r_trans = Ray(rec.p, refracted);
@@ -247,6 +252,13 @@ bool scatter_dielec(Ray r_in, hit_record rec, vec4 &fresnel, Ray &r_ref, Ray &r_
 ///////////////////////////////////////////////////////////////////
 // color
 vec4 getColorFromEnvironment(vec3 direction){
+//    vec3 pos = direction;
+//    vec2 uv = vec2(0.0);
+//    uv.x = atan(pos.z, pos.x) * 0.5;
+//    uv.y = asin(pos.y);
+//    uv = uv / M_PI + 0.5;
+//    vec4 envCol = texture(envMap, uv);
+//    return envCol;
     float t = 0.5f * (direction.y + 1.0f);
     return ( (1.0f - t) * vec4(1.0f) ) + (t * vec4(0.5f, 0.7f, 1.0f, 1.0f));
 }
@@ -264,7 +276,7 @@ vec4 color(Ray r, sphere_list s, int depth){
             vec4 attenuation;
             bool res = false;
             bool trans = false;
-            switch (rec.material) {
+            switch (rec.m.type) {
                 case MATTE:
                     res = scatter_matte(r, rec, attenuation, scattered);
                     break;
@@ -312,7 +324,7 @@ vec4 color_nonrecursive(Ray r, sphere_list s){
                 vec4 attenuation;
                 bool res = false;
                 bool trans = false;
-                switch (rec.material) {
+                switch (rec.m.type) {
                     case MATTE:
                         res = scatter_matte(d.r, rec, attenuation, scattered);
                         break;
@@ -371,10 +383,10 @@ int main() {
 
     sphere_list s_list;
     s_list.list_size = 4;
-    s_list.s[0] = sphere(center, radius, MATTE, vec4(0.1f, 0.2f, 0.5f, 1.0f));
-    s_list.s[1] = sphere(vec3(0.0f, -100.5f, -1.0f), 100.0f, MATTE, vec4(0.8f, 0.8f, 0.0f, 1.0f));
-    s_list.s[2] = sphere(vec3(1.0f, 0.0f, -1.0f), 0.5f, METAL, vec4(0.8f, 0.6f, 0.2f, 1.0f));
-    s_list.s[3] = sphere(vec3(-1.0f, 0.0f, -1.0f), 0.5f, DIELEC, 1.5); // METAL, vec4(0.8f, 0.8f, 0.8f, 1.0f));
+    s_list.s[0] = sphere(center, radius, material(MATTE, vec4(0.1f, 0.2f, 0.5f, 1.0f)));
+    s_list.s[1] = sphere(vec3(0.0f, -100.5f, -1.0f), 100.0f, material(MATTE, vec4(0.8f, 0.8f, 0.0f, 1.0f)));
+    s_list.s[2] = sphere(vec3(1.0f, 0.0f, -1.0f), 0.5f, material(METAL, vec4(0.8f, 0.6f, 0.2f, 1.0f)));
+    s_list.s[3] = sphere(vec3(-1.0f, 0.0f, -1.0f), 0.5f, material(DIELEC, vec2(1.5f, 0.0f))); // METAL, vec4(0.8f, 0.8f, 0.8f, 1.0f));
 
     camera cam;
     for(int j = ny - 1; j >= 0; j--){
@@ -385,8 +397,8 @@ int main() {
                 float u = (float)(i + drand48()) / float(nx);
                 float v = (float)(j + drand48()) / float(ny);
                 Ray r = cam.get_ray(u, v);
-//                col += color(r, s_list, -1);
-                col += color_nonrecursive(r, s_list);
+                col += color(r, s_list, -1);
+//                col += color_nonrecursive(r, s_list);
                 flushStack();
             }
             col /= float(ns);
@@ -399,3 +411,10 @@ int main() {
     }
     return 0;
 }
+
+/*
+ Steel:n=2.485,k=3.433
+ Silver:n=0.177,k=3.638
+ Gold:n=0.37,k=2.82
+ Copper: n=0.617,k=2.63
+*/
