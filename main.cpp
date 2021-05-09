@@ -203,23 +203,43 @@ bool scatter_metal(Ray r_in, hit_record rec, vec4 &attenuation, Ray &scattered){
     return (dot(scattered.direction, rec.normal) > 0);
 }
 
-bool scatter_dielec(Ray r_in, hit_record rec, vec4 &attenuation, Ray &scattered){
+float getFresnel(vec3 incidence, vec3 outward_normal, vec3 transmitted, float ni, float nt){
+    float cos_i = dot(incidence, outward_normal)/(length(incidence) * length(outward_normal));
+    float cos_t = dot(transmitted, outward_normal)/(length(transmitted) * length(outward_normal));
+    float nt_cos_i = nt * cos_i;
+    float ni_cos_t = ni * cos_t;
+    float r_par = (nt_cos_i - ni_cos_t) / (nt_cos_i + ni_cos_t);
+    float ni_cos_i = ni * cos_i;
+    float nt_cos_t = nt * cos_t;
+    float r_per = (ni_cos_i - nt_cos_t) / (ni_cos_i + nt_cos_t);
+    float f = (float)(pow(r_par, 2) + pow(r_per, 2)) / 2.0f;
+    return f;
+}
+
+bool scatter_dielec(Ray r_in, hit_record rec, vec4 &fresnel, Ray &r_ref, Ray &r_trans){
     vec3 outward_normal;
     vec3 reflected = reflect(r_in.direction, rec.normal);
-    float ni_over_nt;
-    attenuation = vec4(1.0, 1.0, 1.0, 1.0);
     vec3 refracted;
+    float ni;
+    float nt;
     if(dot(r_in.direction, rec.normal) > 0){
         outward_normal = -rec.normal;
-        ni_over_nt = rec.ref_idx;
+        ni = rec.ref_idx;
+        nt = 1.0f;
     } else {
         outward_normal = rec.normal;
-        ni_over_nt = 1 / rec.ref_idx;
+        ni = 1.0f;
+        nt = rec.ref_idx;
     }
-    if(refract(r_in.direction, outward_normal, ni_over_nt, refracted)){
-        scattered = Ray(rec.p, refracted);
+    if(refract(r_in.direction, outward_normal, ni/nt, refracted)){
+        float f = getFresnel(r_in.direction, outward_normal, refracted, ni, nt);
+        fresnel = vec4(vec3(f), 1.0);
+        r_ref = Ray(rec.p, reflected);
+        r_trans = Ray(rec.p, refracted);
     } else {
-        scattered = Ray(rec.p, reflected);
+        fresnel = vec4(1.0);
+        r_ref = Ray(rec.p, reflected);
+        r_trans = Ray(vec3(0.0), vec3(0.0));
     }
     return true;
 }
@@ -234,13 +254,16 @@ vec4 getColorFromEnvironment(vec3 direction){
 #define MAX_FLOAT	999999999
 vec4 color(Ray r, sphere_list s, int depth){
     hit_record rec;
-    if (hit_sphere_list(s, r, 0.001, MAX_FLOAT, rec)){
+    vec4 col = vec4(vec3(0.0), 1.0);
 
+    if (hit_sphere_list(s, r, 0.001, MAX_FLOAT, rec)){
         ++depth;
         if(depth < MAX_BOUNCE){
             Ray scattered;
+            Ray transmitted;
             vec4 attenuation;
             bool res = false;
+            bool trans = false;
             switch (rec.material) {
                 case MATTE:
                     res = scatter_matte(r, rec, attenuation, scattered);
@@ -249,38 +272,46 @@ vec4 color(Ray r, sphere_list s, int depth){
                     res = scatter_metal(r, rec, attenuation, scattered);
                     break;
                 case DIELEC:
-                    res = scatter_dielec(r, rec, attenuation, scattered);
+                    res = scatter_dielec(r, rec, attenuation, scattered, transmitted);
+                    if(transmitted.origin != vec3(0.0)){
+                        trans = true;
+                    }
                     break;
             }
             if(res){
-                return attenuation * color(scattered, s, depth);
-            } else {
-                return vec4(0.0, 0.0, 0.0, 1.0);
+                if(trans){
+                    col += vec4(vec3(1.0f) - vec3(attenuation), 1.0f) * color(transmitted, s, depth);
+                }
+                col += attenuation * color(scattered, s, depth);
             }
-        } else {
-            return vec4(0.0, 0.0, 0.0, 1.0);
         }
     } else {
         vec3 unit_direction = normalize(r.direction);
-        vec4 col = getColorFromEnvironment(unit_direction);
-        return col;
+        col += getColorFromEnvironment(unit_direction);
     }
+    col = vec4(vec3(col), 1.0);
+    return col;
 }
 
 vec4 color_nonrecursive(Ray r, sphere_list s){
+    vec4 col = vec4(vec3(0.0), 1.0);
     stackFrame d = stackFrame(r, vec4(1.0f), -1);
     push(d);
     while(!isStackEmpty()){
         d = pop();
+        vec4 I = d.I;
 
         hit_record rec;
         if (hit_sphere_list(s, d.r, 0.001, MAX_FLOAT, rec)){
 
             d.depth++;
+
             if(d.depth < MAX_BOUNCE){
                 Ray scattered;
+                Ray transmitted;
                 vec4 attenuation;
                 bool res = false;
+                bool trans = false;
                 switch (rec.material) {
                     case MATTE:
                         res = scatter_matte(d.r, rec, attenuation, scattered);
@@ -289,26 +320,30 @@ vec4 color_nonrecursive(Ray r, sphere_list s){
                         res = scatter_metal(d.r, rec, attenuation, scattered);
                         break;
                     case DIELEC:
-                        res = scatter_dielec(d.r, rec, attenuation, scattered);
+                        res = scatter_dielec(d.r, rec, attenuation, scattered, transmitted);
+                        if(transmitted.origin != vec3(0.0)) {
+                            trans = true;
+                        }
                         break;
                 }
                 if(res){
-                    d.I *= attenuation;
+                    d.I = I * attenuation;
                     d.r = scattered;
                     push(d);
-                } else {
-                    return vec4(vec3(0.0), 1.0);
+                    if(trans){
+                        d.I = I * vec4(vec3(1.0f) - vec3(attenuation), 1.0f);
+                        d.r = transmitted;
+                        push(d);
+                    }
                 }
-            } else {
-                return vec4(vec3(0.0), 1.0);
             }
         } else {
             vec3 unit_direction = normalize(d.r.direction);
-            vec4 col = getColorFromEnvironment(unit_direction);
-            return d.I * col;
+            col += I * getColorFromEnvironment(unit_direction);
         }
     }
-    return vec4(1.0, 0.0, 0.0f, 1.0f);
+    col = vec4(vec3(col), 1.0);
+    return col;
 }
 
 ////////////////////////////////////////////////////
