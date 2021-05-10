@@ -24,6 +24,13 @@ void pVal(T val, const string& s = ""){
     }
 }
 
+float max(float a, float b){
+    return glm::max(a, b);
+}
+
+float min(float a, float b){
+    return glm::min(a, b);
+}
 ////////////////////////////////////////////////////
 // vector operations
 bool refract(vec3 v, vec3 n, float ni_over_nt, vec3 &refracted){
@@ -69,6 +76,32 @@ struct material{
 
 ////////////////////////////////////////////////////
 // Hittable
+struct aabb{
+    vec3 vmin;
+    vec3 vmax;
+    aabb():vmin(vec3(0.0f)), vmax(vec3(0.0f)){}
+    aabb(vec3 vmin, vec3 vmax):vmin(vmin), vmax(vmax){}
+};
+
+bool hit_aabb(aabb box, Ray r, float t_min, float t_max){
+    for (int i = 0; i < 3; ++i) {
+        float invD = 1.0f / r.direction[i];
+        float t0 = (box.vmin[i] - r.origin[i]) * invD;
+        float t1 = (box.vmax[i] - r.origin[i]) * invD;
+        if (invD < 0.0f){
+            float temp = t0;
+            t0 = t1;
+            t1 = temp;
+        }
+        t_min = t0 > t_min ? t0 : t_min;
+        t_max = t1 < t_max ? t1 : t_max;
+        if(t_max <= t_min){
+            return false;
+        }
+    }
+    return true;
+}
+
 struct hit_record{
     float t; // parameter
     vec3 p; // hit point
@@ -81,11 +114,17 @@ struct sphere{
     vec3 center;
     float radius;
     material m;
-    sphere():center(vec3(0.0)), radius(0.0), m(){}
-    sphere(vec3 center, float radius, material m):center(center), radius(radius), m(m){}
+    aabb box;
+    sphere():center(vec3(0.0)), radius(0.0), m(), box(){}
+    sphere(vec3 center, float radius, material m):center(center), radius(radius), m(m), box() {}
 };
 
-bool check_hit_rec(sphere s, Ray r, float temp, float t_min, float t_max, hit_record &rec){
+aabb get_sphere_aabb(sphere &s){
+    aabb box = aabb(s.center - vec3(s.radius), center + vec3(s.radius));
+    return box;
+}
+
+bool check_sphere_hit_rec(sphere s, Ray r, float temp, float t_min, float t_max, hit_record &rec){
     if(temp < t_max && temp > t_min){
         rec.t = temp;
         rec.p = point_at_parameter(r, rec.t);
@@ -97,6 +136,9 @@ bool check_hit_rec(sphere s, Ray r, float temp, float t_min, float t_max, hit_re
 }
 
 bool hit_sphere(sphere s, Ray r, float t_min, float t_max, hit_record &rec){
+    if(!hit_aabb(s.box, r, t_min, t_max)){
+        return false;
+    }
     vec3 oc = r.origin - s.center;
     float a = dot(r.direction, r.direction);
     float b = dot(r.direction, oc);
@@ -105,12 +147,12 @@ bool hit_sphere(sphere s, Ray r, float t_min, float t_max, hit_record &rec){
     if(discriminant > 0){
         float temp = (-b - sqrt(discriminant)) / a;
         hit_record hr;
-        if(check_hit_rec(s, r, temp, t_min, t_max, hr)){
+        if(check_sphere_hit_rec(s, r, temp, t_min, t_max, hr)){
             rec = hr;
             return true;
         }
         temp = (-b + sqrt(discriminant)) / a;
-        if(check_hit_rec(s, r, temp, t_min, t_max, hr)){
+        if(check_sphere_hit_rec(s, r, temp, t_min, t_max, hr)){
             rec = hr;
             return true;
         }
@@ -139,6 +181,14 @@ bool hit_sphere_list(sphere_list s_list, Ray r, float t_min, float t_max, hit_re
         }
     }
     return hit_anything;
+}
+
+sphere_list setup_aabb_sphere_list(sphere_list s_list){
+    sphere_list aabb_sphere_list = s_list;
+    for (int i = 0; i < s_list.list_size; ++i) {
+        aabb_sphere_list.s[i].box = get_sphere_aabb(s_list.s[i]);
+    }
+    return aabb_sphere_list;
 }
 
 ////////////////////////////////////////////////////
@@ -268,7 +318,7 @@ vec4 color(Ray r, sphere_list s, int depth){
     hit_record rec;
     vec4 col = vec4(vec3(0.0), 1.0);
 
-    if (hit_sphere_list(s, r, 0.001, MAX_FLOAT, rec)){
+    if (hit_sphere_list(s, r, 0.001, float(MAX_FLOAT), rec)){
         ++depth;
         if(depth < MAX_BOUNCE){
             Ray scattered;
@@ -314,7 +364,7 @@ vec4 color_nonrecursive(Ray r, sphere_list s){
         vec4 I = d.I;
 
         hit_record rec;
-        if (hit_sphere_list(s, d.r, 0.001, MAX_FLOAT, rec)){
+        if (hit_sphere_list(s, d.r, 0.001, float(MAX_FLOAT), rec)){
 
             d.depth++;
 
@@ -387,6 +437,8 @@ int main() {
     s_list.s[1] = sphere(vec3(0.0f, -100.5f, -1.0f), 100.0f, material(MATTE, vec4(0.8f, 0.8f, 0.0f, 1.0f)));
     s_list.s[2] = sphere(vec3(1.0f, 0.0f, -1.0f), 0.5f, material(METAL, vec4(0.8f, 0.6f, 0.2f, 1.0f)));
     s_list.s[3] = sphere(vec3(-1.0f, 0.0f, -1.0f), 0.5f, material(DIELEC, vec2(1.5f, 0.0f))); // METAL, vec4(0.8f, 0.8f, 0.8f, 1.0f));
+
+    s_list = setup_aabb_sphere_list(s_list);
 
     camera cam;
     for(int j = ny - 1; j >= 0; j--){
