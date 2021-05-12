@@ -237,16 +237,13 @@ bool hit_plane_sphere_list(plane p, sphere_list s_list, Ray r, float t_min, floa
     hit_record temp_rec;
     bool hit_anything = false;
     float closest_so_far = t_max;
-    for (int i = 0; i < s_list.list_size; ++i) {
-        if(hit_sphere_with_aabb(s_list.s[i], r, t_min, closest_so_far, temp_rec)){
-            hit_anything = true;
-            closest_so_far = temp_rec.t;
-            rec = temp_rec;
-        }
+    if(hit_sphere_list(s_list, r, t_min, closest_so_far, temp_rec)){
+        hit_anything = true;
+        closest_so_far = temp_rec.t;
+        rec = temp_rec;
     }
     if(hit_plane(p, r, t_min, closest_so_far, temp_rec)){
         hit_anything = true;
-        closest_so_far = temp_rec.t;
         rec = temp_rec;
     }
     return hit_anything;
